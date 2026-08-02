@@ -2,8 +2,9 @@ const { getDatabase } = require('../../database/connection');
 const Validacao = require('../../services/validacao');
 const EmailService = require('../../services/email');
 const Geolocalizacao = require('../../services/geolocalizacao');
-const { formatarMoeda, gerarCodigo } = require('../../utils/helpers');
+const { formatarMoeda } = require('../../utils/helpers');
 const { showMenuPrincipal } = require('./menu');
+const axios = require('axios');
 
 async function iniciarCadastro(bot, chatId) {
     const mensagem = `📝 *Cadastro*\n\n` +
@@ -16,7 +17,6 @@ async function iniciarCadastro(bot, chatId) {
 async function processarEtapaCadastro(bot, chatId, userId, data, messageId, estados) {
     const estado = estados.get(userId);
     
-    // Compartilhar localização
     if (data === 'cad_localizacao') {
         await bot.sendMessage(chatId, '📍 Por favor, compartilhe sua localização:', {
             reply_markup: {
@@ -28,9 +28,8 @@ async function processarEtapaCadastro(bot, chatId, userId, data, messageId, esta
         return;
     }
     
-    // Pular endereço
     if (data === 'cad_pular_endereco') {
-        finalizarCadastro(bot, chatId, userId, estados);
+        await finalizarCadastro(bot, chatId, userId, estados);
         return;
     }
     
@@ -64,7 +63,6 @@ async function processarTexto(bot, chatId, userId, texto, estados) {
             return bot.sendMessage(chatId, validacao.mensagem);
         }
         
-        // Salva nome
         db.prepare(`INSERT INTO clientes (telegram_id, nome, etapa_cadastro) 
                     VALUES (?, ?, 'email')
                     ON CONFLICT(telegram_id) DO UPDATE SET nome = ?, etapa_cadastro = 'email'`)
@@ -80,7 +78,6 @@ async function processarTexto(bot, chatId, userId, texto, estados) {
             return bot.sendMessage(chatId, validacao.mensagem);
         }
         
-        // Envia código
         const resultado = await EmailService.enviarCodigoVerificacao(validacao.email);
         if (!resultado.sucesso) {
             return bot.sendMessage(chatId, '❌ Erro ao enviar email. Tente novamente.');
@@ -135,38 +132,112 @@ async function processarTexto(bot, chatId, userId, texto, estados) {
             reply_markup: {
                 inline_keyboard: [
                     [{ text: '📍 Compartilhar Localização', callback_data: 'cad_localizacao' }],
+                    [{ text: '📮 Digitar CEP', callback_data: 'cad_digitar_cep' }],
                     [{ text: '⏭️ Pular (Depois preencho)', callback_data: 'cad_pular_endereco' }]
                 ]
             }
         };
         
-        return bot.sendMessage(chatId, `✅ Telefone salvo!\n\nAgora, seu endereço:\n_Digite no formato: Rua, Número, Bairro, Cidade, Estado_\n\nExemplo: Rua Principal, 100, Centro, Paranavaí, PR\n\nOu compartilhe sua localização:`, {
+        return bot.sendMessage(chatId, `✅ Telefone salvo!\n\nAgora, seu endereço:`, {
             parse_mode: 'Markdown',
             ...teclado
         });
     }
     
-    if (estado.etapa === 'endereco') {
+    // CEP
+    if (estado.etapa === 'endereco' && estado.aguardando === 'cep') {
+        const cepValido = await Validacao.validarCEP(texto);
+        
+        if (!cepValido.valido) {
+            return bot.sendMessage(chatId, cepValido.mensagem + '\n\nTente novamente ou compartilhe sua localização.');
+        }
+        
+        const { logradouro, bairro, localidade, uf } = cepValido.dados;
+        
+        db.prepare(`UPDATE clientes SET 
+            cep = ?, logradouro = ?, bairro = ?, cidade = ?, estado = ?,
+            etapa_cadastro = 'endereco_numero'
+            WHERE telegram_id = ?`)
+            .run(cepValido.formatado, logradouro, bairro, localidade, uf, userId);
+        
+        estado.aguardando = 'numero';
+        
+        let msg = `📍 *Endereço encontrado:*\n\n`;
+        msg += `📮 CEP: ${cepValido.formatado}\n`;
+        msg += `🏠 ${logradouro}\n`;
+        msg += `🏘️ ${bairro}\n`;
+        msg += `🏙️ ${localidade}/${uf}\n\n`;
+        msg += `Agora, digite o *número*:`;
+        
+        return bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
+    }
+    
+    // Número do endereço
+    if (estado.aguardando === 'numero') {
+        db.prepare('UPDATE clientes SET numero = ?, etapa_cadastro = ? WHERE telegram_id = ?')
+            .run(texto.trim(), 'completo', userId);
+        
+        // Busca coordenadas e unidade próxima
+        const cliente = db.prepare('SELECT * FROM clientes WHERE telegram_id = ?').get(userId);
+        const enderecoCompleto = `${cliente.logradouro}, ${texto.trim()}, ${cliente.cidade}, ${cliente.estado}`;
+        
+        const coords = await Geolocalizacao.buscarCoordenadas(enderecoCompleto);
+        if (coords) {
+            db.prepare('UPDATE clientes SET latitude = ?, longitude = ? WHERE telegram_id = ?')
+                .run(coords.latitude, coords.longitude, userId);
+            
+            const proximas = await Geolocalizacao.encontrarUnidadeProxima(coords.latitude, coords.longitude);
+            if (proximas.length > 0) {
+                db.prepare('UPDATE clientes SET unidade_proxima_id = ? WHERE telegram_id = ?')
+                    .run(proximas[0].id, userId);
+                
+                await bot.sendMessage(chatId, 
+                    `📍 Unidade mais próxima:\n\n` +
+                    `🏪 *${proximas[0].nome}*\n` +
+                    `📍 ${proximas[0].logradouro}, ${proximas[0].numero}\n` +
+                    `📏 ${proximas[0].distancia} km\n` +
+                    `🚚 Taxa: ${formatarMoeda(proximas[0].taxa_entrega)}`,
+                    { parse_mode: 'Markdown' }
+                );
+            }
+        }
+        
+        return finalizarCadastro(bot, chatId, userId, estados);
+    }
+    
+    // Endereço completo (formato antigo)
+    if (estado.etapa === 'endereco' && !estado.aguardando) {
         const partes = texto.split(',').map(p => p.trim());
         
         if (partes.length >= 4) {
-            const [logradouro, numero, bairro, cidade, estado] = partes;
+            const [logradouro, numero, bairro, cidade, estado_uf] = partes;
             
             db.prepare(`UPDATE clientes SET 
                 logradouro = ?, numero = ?, bairro = ?, cidade = ?, estado = ?,
                 etapa_cadastro = 'completo'
                 WHERE telegram_id = ?`)
-                .run(logradouro, numero, bairro, cidade, estado || 'PR', userId);
+                .run(logradouro, numero, bairro, cidade, estado_uf || 'PR', userId);
             
             // Busca unidade próxima
-            const coords = await Geolocalizacao.buscarCoordenadas(`${logradouro}, ${numero}, ${cidade}, ${estado || 'PR'}`);
+            const enderecoCompleto = `${logradouro}, ${numero}, ${cidade}, ${estado_uf || 'PR'}`;
+            const coords = await Geolocalizacao.buscarCoordenadas(enderecoCompleto);
+            
             if (coords) {
+                db.prepare('UPDATE clientes SET latitude = ?, longitude = ? WHERE telegram_id = ?')
+                    .run(coords.latitude, coords.longitude, userId);
+                
                 const proximas = await Geolocalizacao.encontrarUnidadeProxima(coords.latitude, coords.longitude);
                 if (proximas.length > 0) {
-                    db.prepare('UPDATE clientes SET unidade_proxima_id = ?, latitude = ?, longitude = ? WHERE telegram_id = ?')
-                        .run(proximas[0].id, coords.latitude, coords.longitude, userId);
+                    db.prepare('UPDATE clientes SET unidade_proxima_id = ? WHERE telegram_id = ?')
+                        .run(proximas[0].id, userId);
                     
-                    await bot.sendMessage(chatId, `📍 Você está mais próximo da unidade:\n\n🏪 *${proximas[0].nome}*\n📍 ${proximas[0].logradouro}, ${proximas[0].numero}\n📏 ${proximas[0].distancia} km\n🚚 Taxa de entrega: ${formatarMoeda(proximas[0].taxa_entrega)}`, { parse_mode: 'Markdown' });
+                    await bot.sendMessage(chatId, 
+                        `📍 Unidade mais próxima:\n\n` +
+                        `🏪 *${proximas[0].nome}*\n` +
+                        `📍 ${proximas[0].logradouro}, ${proximas[0].numero}\n` +
+                        `📏 ${proximas[0].distancia} km`,
+                        { parse_mode: 'Markdown' }
+                    );
                 }
             }
             
@@ -190,10 +261,16 @@ async function processarLocalizacao(bot, chatId, userId, location, estados) {
         db.prepare('UPDATE clientes SET unidade_proxima_id = ? WHERE telegram_id = ?')
             .run(proximas[0].id, userId);
         
-        await bot.sendMessage(chatId, `📍 Unidade mais próxima:\n\n🏪 *${proximas[0].nome}*\n📍 ${proximas[0].logradouro}, ${proximas[0].numero}\n📏 ${proximas[0].distancia} km\n🚚 Taxa: ${formatarMoeda(proximas[0].taxa_entrega)}`, { parse_mode: 'Markdown' });
+        await bot.sendMessage(chatId, 
+            `📍 Unidade mais próxima:\n\n` +
+            `🏪 *${proximas[0].nome}*\n` +
+            `📍 ${proximas[0].logradouro}, ${proximas[0].numero}\n` +
+            `📏 ${proximas[0].distancia} km\n` +
+            `🚚 Taxa: ${formatarMoeda(proximas[0].taxa_entrega)}`,
+            { parse_mode: 'Markdown' }
+        );
     }
     
-    // Remove teclado de localização
     await bot.sendMessage(chatId, '✅ Localização salva!', {
         reply_markup: { remove_keyboard: true }
     });
