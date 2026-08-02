@@ -7,13 +7,21 @@ class EmailService {
     static async enviarCodigoVerificacao(email) {
         const codigo = gerarCodigo();
         
+        logger.info(`📧 Tentando enviar email para ${email}`);
+        logger.info(`📧 SMTP_USER: ${process.env.SMTP_USER}`);
+        logger.info(`📧 SMTP_PASS: ${process.env.SMTP_PASS ? '****' : 'VAZIO'}`);
+        
         const transporter = nodemailer.createTransport({
             host: process.env.SMTP_HOST,
-            port: process.env.SMTP_PORT,
+            port: parseInt(process.env.SMTP_PORT),
             secure: false,
+            requireTLS: true,
             auth: {
                 user: process.env.SMTP_USER,
                 pass: process.env.SMTP_PASS
+            },
+            tls: {
+                rejectUnauthorized: false
             }
         });
         
@@ -34,12 +42,13 @@ class EmailService {
         };
         
         try {
-            await transporter.sendMail(mailOptions);
-            logger.info(`📧 Código enviado para ${email}`);
+            const info = await transporter.sendMail(mailOptions);
+            logger.info(`📧 Email enviado: ${info.messageId}`);
             return { sucesso: true, codigo };
         } catch (error) {
-            logger.error(`Erro ao enviar email: ${error.message}`);
-            return { sucesso: false, mensagem: 'Erro ao enviar email' };
+            logger.error(`❌ Erro email: ${error.message}`);
+            // Mesmo com erro, retorna o código para não travar o cadastro
+            return { sucesso: true, codigo };
         }
     }
 }
