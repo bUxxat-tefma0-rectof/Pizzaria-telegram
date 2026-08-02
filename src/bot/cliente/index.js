@@ -4,9 +4,9 @@ const logger = require('../../utils/logger');
 const { showMenuPrincipal, processarMenu } = require('./menu');
 const { iniciarCadastro, processarEtapaCadastro, processarTexto, processarLocalizacao } = require('./cadastro');
 const { processarCardapio, pesquisarProdutos } = require('./cardapio');
-const { showCarrinho, processarCarrinho, processarTextoCarrinho } = require('./carrinho');
+const { showCarrinho, processarCarrinho } = require('./carrinho');
 const { processarPedidos } = require('./pedidos');
-const { showPerfil, processarPerfil } = require('./perfil');
+const { showPerfil, processarPerfil, processarTextoPerfil } = require('./perfil');
 const { processarPagamento } = require('./pagamento');
 const { processarFavoritos } = require('./favoritos');
 
@@ -40,19 +40,16 @@ async function startClientBot() {
         
         bot.answerCallbackQuery(query.id);
         
-        // Menu
         if (data.startsWith('menu_')) {
             await processarMenu(bot, chatId, userId, data, messageId, estados);
             return;
         }
         
-        // Cadastro
         if (data.startsWith('cad_')) {
             await processarEtapaCadastro(bot, chatId, userId, data, messageId, estados);
             return;
         }
         
-        // Cardápio
         if (data.startsWith('card_') || data.startsWith('cat_') || data.startsWith('prod_') || 
             data.startsWith('tam_') || data.startsWith('borda_') || data.startsWith('adic_') || 
             data.startsWith('carr_add_') || data.startsWith('fav_toggle_')) {
@@ -60,31 +57,26 @@ async function startClientBot() {
             return;
         }
         
-        // Carrinho
         if (data.startsWith('carr_')) {
             await processarCarrinho(bot, chatId, userId, data, messageId, estados);
             return;
         }
         
-        // Pedidos
         if (data.startsWith('ped_') || data === 'menu_pedidos') {
             await processarPedidos(bot, chatId, userId, data, messageId, estados);
             return;
         }
         
-        // Perfil
         if (data.startsWith('perfil_') || data === 'menu_perfil') {
             await processarPerfil(bot, chatId, userId, data, messageId, estados);
             return;
         }
         
-        // Pagamento
         if (data.startsWith('pag_') || data.startsWith('aval_')) {
             await processarPagamento(bot, chatId, userId, data, messageId, estados);
             return;
         }
         
-        // Favoritos
         if (data.startsWith('fav_') || data === 'menu_favoritos') {
             await processarFavoritos(bot, chatId, userId, data, messageId);
             return;
@@ -93,24 +85,23 @@ async function startClientBot() {
     
     bot.on('message', async (msg) => {
         if (msg.text && msg.text.startsWith('/')) return;
+        
+        const chatId = msg.chat.id;
+        const userId = msg.from.id;
+        
         if (msg.location) {
-            const userId = msg.from.id;
             const estado = estados.get(userId);
             if (estado && estado.tela === 'cadastro' && estado.etapa === 'endereco') {
-                await processarLocalizacao(bot, msg.chat.id, userId, msg.location, estados);
+                await processarLocalizacao(bot, chatId, userId, msg.location, estados);
             }
             return;
         }
         
-        const chatId = msg.chat.id;
-        const userId = msg.from.id;
         const texto = msg.text;
-        
         if (!texto) return;
         
         const estado = estados.get(userId);
         
-        // Pesquisa
         if (estado && estado.tela === 'pesquisar' && estado.aguardando === 'termo') {
             estado.aguardando = null;
             estados.set(userId, estado);
@@ -118,29 +109,14 @@ async function startClientBot() {
             return;
         }
         
-        // Cadastro
         if (estado && estado.tela === 'cadastro' && estado.aguardando) {
             await processarTexto(bot, chatId, userId, texto, estados);
             return;
         }
         
-        // Cupom ou observação
-        const { estadosCarrinho } = require('./carrinho');
-        const estadoCarrinho = estadosCarrinho.get(userId);
-        
-        if (estadoCarrinho && (estadoCarrinho.aguardandoCupom || estadoCarrinho.aguardandoObs)) {
-            await processarTextoCarrinho(bot, chatId, userId, texto, null);
+        if (estado && estado.tela === 'perfil' && estado.aguardando) {
+            await processarTextoPerfil(bot, chatId, userId, texto, estados);
             return;
-        }
-    });
-    
-    bot.on('location', async (msg) => {
-        const chatId = msg.chat.id;
-        const userId = msg.from.id;
-        const estado = estados.get(userId);
-        
-        if (estado && estado.tela === 'cadastro' && estado.etapa === 'endereco') {
-            await processarLocalizacao(bot, chatId, userId, msg.location, estados);
         }
     });
     
