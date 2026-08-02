@@ -6,9 +6,10 @@ const { showUnidadesMenu, processarUnidadesAdmin, processarTextoUnidades } = req
 const { showCardapioMenu, processarCardapioAdmin, processarTextoAdmin } = require('./cardapio');
 const { showProdutosMenu, processarProdutosAdmin, processarTextoProdutos } = require('./produtos');
 const { showPedidosMenu, processarPedidosAdmin } = require('./pedidos');
-const { showClientesMenu } = require('./clientes');
-const { showRelatoriosMenu } = require('./relatorios');
+const { showClientesMenu, processarClientesAdmin, processarTextoClientes } = require('./clientes');
+const { showRelatoriosMenu, processarRelatoriosAdmin } = require('./relatorios');
 const { showCuponsMenu, processarCuponsAdmin, processarTextoCupons } = require('./cupons');
+const { showConfigMenu, processarConfigAdmin, processarTextoConfig } = require('./config');
 
 let adminBot = null;
 const estadosAdmin = new Map();
@@ -48,13 +49,16 @@ async function startAdminBot() {
         if (!adminIds.includes(userId)) return;
         if (msg.text && msg.text.startsWith('/')) return;
         
-        const estado = estadosAdmin.get(userId);
-        if (estado && estado.aguardando && msg.text) {
-            await processarTextoAdmin(bot, msg.chat.id, userId, msg.text, estadosAdmin);
-            await processarTextoProdutos(bot, msg.chat.id, userId, msg.text, estadosAdmin);
-            await processarTextoUnidades(bot, msg.chat.id, userId, msg.text, estadosAdmin);
-            await processarTextoCupons(bot, msg.chat.id, userId, msg.text, estadosAdmin);
-        }
+        const chatId = msg.chat.id;
+        const texto = msg.text;
+        if (!texto) return;
+        
+        await processarTextoAdmin(adminBot, chatId, userId, texto, estadosAdmin);
+        await processarTextoProdutos(adminBot, chatId, userId, texto, estadosAdmin);
+        await processarTextoUnidades(adminBot, chatId, userId, texto, estadosAdmin);
+        await processarTextoCupons(adminBot, chatId, userId, texto, estadosAdmin);
+        await processarTextoConfig(adminBot, chatId, userId, texto, estadosAdmin);
+        await processarTextoClientes(adminBot, chatId, userId, texto, estadosAdmin);
     });
     
     logger.info('🤖 Bot Admin configurado');
@@ -71,7 +75,7 @@ async function showDashboardAdmin(chatId, userId) {
     
     const mensagem = `📊 *PAINEL ADMINISTRATIVO*\n\n` +
                     `👥 Clientes: *${totalClientes}*\n` +
-                    `📦 Pedidos: *${totalPedidos}*\n` +
+                    `📦 Total Pedidos: *${totalPedidos}*\n` +
                     `⚠️ Pendentes: *${pedidosPendentes}*\n` +
                     `🕐 Hoje: *${pedidosHoje}*\n` +
                     `💰 Faturamento: *${formatarMoeda(totalFaturamento)}*\n\n` +
@@ -98,53 +102,50 @@ async function showDashboardAdmin(chatId, userId) {
 }
 
 async function processarAdminMenu(chatId, userId, data, messageId) {
-    // Unidades
     if (data.startsWith('adm_unid')) {
         await processarUnidadesAdmin(adminBot, chatId, userId, data, messageId, estadosAdmin);
         return;
     }
     
-    // Cardápio
-    if (data.startsWith('adm_cardapio') || data.startsWith('adm_cat_') || data.startsWith('adm_borda') || data.startsWith('adm_adic') || data.startsWith('adm_tam')) {
+    if (data.startsWith('adm_cardapio') || data.startsWith('adm_cat_') || data.startsWith('adm_borda') || 
+        data.startsWith('adm_adic') || data.startsWith('adm_tam')) {
         await processarCardapioAdmin(adminBot, chatId, userId, data, messageId, estadosAdmin);
         return;
     }
     
-    // Produtos
     if (data.startsWith('adm_prod')) {
         await processarProdutosAdmin(adminBot, chatId, userId, data, messageId, estadosAdmin);
         return;
     }
     
-    // Pedidos
-    if (data.startsWith('adm_pedido') || data.startsWith('adm_status')) {
+    if (data.startsWith('adm_pedido') || data.startsWith('adm_status') || data === 'adm_pedidos') {
         await processarPedidosAdmin(adminBot, chatId, userId, data, messageId);
         return;
     }
     
-    // Cupons
+    if (data.startsWith('adm_cli')) {
+        await processarClientesAdmin(adminBot, chatId, userId, data, messageId, estadosAdmin);
+        return;
+    }
+    
     if (data.startsWith('adm_cupom')) {
         await processarCuponsAdmin(adminBot, chatId, userId, data, messageId, estadosAdmin);
         return;
     }
     
-    // Menu principal
-    switch(data) {
-        case 'adm_pedidos':
-            await showPedidosMenu(adminBot, chatId, messageId);
-            break;
-        case 'adm_clientes':
-            await showClientesMenu(adminBot, chatId, messageId);
-            break;
-        case 'adm_relatorios':
-            await showRelatoriosMenu(adminBot, chatId, messageId);
-            break;
-        case 'adm_config':
-            await adminBot.sendMessage(chatId, '⚙️ Configurações em desenvolvimento.');
-            break;
-        case 'adm_voltar_dashboard':
-            await showDashboardAdmin(chatId, userId);
-            break;
+    if (data.startsWith('adm_rel')) {
+        await processarRelatoriosAdmin(adminBot, chatId, userId, data, messageId);
+        return;
+    }
+    
+    if (data.startsWith('adm_config') || data.startsWith('cfg_')) {
+        await processarConfigAdmin(adminBot, chatId, userId, data, messageId, estadosAdmin);
+        return;
+    }
+    
+    if (data === 'adm_voltar_dashboard') {
+        await showDashboardAdmin(chatId, userId);
+        return;
     }
 }
 
