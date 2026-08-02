@@ -1,18 +1,19 @@
-const mercadopago = require('mercado-pago');
-const { gerarCodigo } = require('../utils/helpers');
+const { MercadoPagoConfig, Payment } = require('mercadopago');
 const logger = require('../utils/logger');
 
 class PagamentoService {
     
     constructor() {
-        mercadopago.configure({
-            access_token: process.env.MERCADO_PAGO_ACCESS_TOKEN
+        this.client = new MercadoPagoConfig({
+            accessToken: process.env.MERCADO_PAGO_ACCESS_TOKEN
         });
     }
     
     async gerarPix(valor, descricao, pedidoId) {
         try {
-            const payment_data = {
+            const payment = new Payment(this.client);
+            
+            const body = {
                 transaction_amount: Number(valor),
                 description: descricao,
                 payment_method_id: 'pix',
@@ -21,13 +22,13 @@ class PagamentoService {
                 }
             };
             
-            const response = await mercadopago.payment.create(payment_data);
+            const response = await payment.create({ body });
             
             const pix = {
-                qr_code: response.body.point_of_interaction.transaction_data.qr_code_base64,
-                copia_cola: response.body.point_of_interaction.transaction_data.qr_code,
-                payment_id: response.body.id,
-                status: response.body.status
+                qr_code: response.point_of_interaction.transaction_data.qr_code_base64,
+                copia_cola: response.point_of_interaction.transaction_data.qr_code,
+                payment_id: response.id,
+                status: response.status
             };
             
             logger.info(`💳 PIX gerado: ${pix.payment_id}`);
@@ -41,10 +42,12 @@ class PagamentoService {
     
     async verificarPagamento(paymentId) {
         try {
-            const response = await mercadopago.payment.get(paymentId);
+            const payment = new Payment(this.client);
+            const response = await payment.get({ id: paymentId });
+            
             return {
-                status: response.body.status,
-                aprovado: response.body.status === 'approved'
+                status: response.status,
+                aprovado: response.status === 'approved'
             };
         } catch (error) {
             return { status: 'error', aprovado: false };
