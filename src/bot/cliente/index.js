@@ -14,7 +14,15 @@ let bot = null;
 const estados = new Map();
 
 async function startClientBot() {
-    bot = new TelegramBot(process.env.BOT_TOKEN_CLIENTE, { polling: true });
+    bot = new TelegramBot(process.env.BOT_TOKEN_CLIENTE, { 
+        polling: {
+            interval: 300,
+            autoStart: true,
+            params: {
+                timeout: 10
+            }
+        }
+    });
     
     bot.onText(/\/start/, async (msg) => {
         const chatId = msg.chat.id;
@@ -83,32 +91,18 @@ async function startClientBot() {
         }
     });
     
-    // ÚNICO handler de mensagem
     bot.on('message', async (msg) => {
         const chatId = msg.chat.id;
         const userId = msg.from.id;
         
-        // Ignora comandos
         if (msg.text && msg.text.startsWith('/')) return;
-        
-        // Localização
-        if (msg.location) {
-            const estado = estados.get(userId);
-            if (estado && estado.tela === 'cadastro') {
-                await processarLocalizacao(bot, chatId, userId, msg.location, estados);
-            }
-            return;
-        }
-        
-        // Texto
         if (!msg.text) return;
         
         const texto = msg.text;
         const estado = estados.get(userId);
         
-        console.log(`📩 Mensagem de ${userId}: "${texto}" | Estado:`, estado ? estado.aguardando : 'sem estado');
-        
-        if (!estado) return;
+        // SÓ processa se estiver em cadastro e aguardando algo
+        if (!estado || !estado.aguardando) return;
         
         // Pesquisa
         if (estado.tela === 'pesquisar' && estado.aguardando === 'termo') {
@@ -119,15 +113,25 @@ async function startClientBot() {
         }
         
         // Cadastro
-        if (estado.tela === 'cadastro' && estado.aguardando) {
+        if (estado.tela === 'cadastro') {
             await processarTexto(bot, chatId, userId, texto, estados);
             return;
         }
         
         // Perfil
-        if (estado.tela === 'perfil' && estado.aguardando) {
+        if (estado.tela === 'perfil') {
             await processarTextoPerfil(bot, chatId, userId, texto, estados);
             return;
+        }
+    });
+    
+    bot.on('location', async (msg) => {
+        const chatId = msg.chat.id;
+        const userId = msg.from.id;
+        const estado = estados.get(userId);
+        
+        if (estado && estado.tela === 'cadastro') {
+            await processarLocalizacao(bot, chatId, userId, msg.location, estados);
         }
     });
     
