@@ -1,9 +1,9 @@
 const TelegramBot = require('node-telegram-bot-api');
 const { getDatabase } = require('../../database/connection');
 const logger = require('../../utils/logger');
-const { showMenuPrincipal } = require('./menu');
+const { showMenuPrincipal, processarMenu } = require('./menu');
 const { iniciarCadastro, processarEtapaCadastro, processarTexto, processarLocalizacao } = require('./cadastro');
-const { processarCardapio } = require('./cardapio');
+const { processarCardapio, pesquisarProdutos } = require('./cardapio');
 const { showCarrinho, processarCarrinho, processarTextoCarrinho } = require('./carrinho');
 const { processarPedidos } = require('./pedidos');
 const { showPerfil, processarPerfil } = require('./perfil');
@@ -42,7 +42,6 @@ async function startClientBot() {
         
         // Menu
         if (data.startsWith('menu_')) {
-            const { processarMenu } = require('./menu');
             await processarMenu(bot, chatId, userId, data, messageId, estados);
             return;
         }
@@ -55,7 +54,8 @@ async function startClientBot() {
         
         // Cardápio
         if (data.startsWith('card_') || data.startsWith('cat_') || data.startsWith('prod_') || 
-            data.startsWith('tam_') || data.startsWith('borda_') || data.startsWith('adic_') || data.startsWith('carr_add_')) {
+            data.startsWith('tam_') || data.startsWith('borda_') || data.startsWith('adic_') || 
+            data.startsWith('carr_add_') || data.startsWith('fav_toggle_')) {
             await processarCardapio(bot, chatId, userId, data, messageId, estados);
             return;
         }
@@ -109,6 +109,14 @@ async function startClientBot() {
         if (!texto) return;
         
         const estado = estados.get(userId);
+        
+        // Pesquisa
+        if (estado && estado.tela === 'pesquisar' && estado.aguardando === 'termo') {
+            estado.aguardando = null;
+            estados.set(userId, estado);
+            await pesquisarProdutos(bot, chatId, texto, null, userId);
+            return;
+        }
         
         // Cadastro
         if (estado && estado.tela === 'cadastro' && estado.aguardando) {
