@@ -4,7 +4,6 @@ const EmailService = require('../../services/email');
 const Geolocalizacao = require('../../services/geolocalizacao');
 const { formatarMoeda } = require('../../utils/helpers');
 const { showMenuPrincipal } = require('./menu');
-const axios = require('axios');
 
 async function iniciarCadastro(bot, chatId) {
     const mensagem = `📝 *Cadastro*\n\n` +
@@ -28,14 +27,15 @@ async function processarEtapaCadastro(bot, chatId, userId, data, messageId, esta
         return;
     }
     
-    if (data === 'cad_pular_endereco') {
-        await finalizarCadastro(bot, chatId, userId, estados);
+    if (data === 'cad_digitar_cep') {
+        estado.aguardando = 'cep';
+        estados.set(userId, estado);
+        await bot.sendMessage(chatId, '📮 Digite seu CEP (apenas números):');
         return;
     }
     
-    if (data === 'cad_confirmar_codigo') {
-        estado.aguardando = 'codigo';
-        await bot.sendMessage(chatId, 'Digite o código de 6 dígitos enviado para seu email:');
+    if (data === 'cad_pular_endereco') {
+        await finalizarCadastro(bot, chatId, userId, estados);
         return;
     }
     
@@ -46,7 +46,7 @@ async function processarEtapaCadastro(bot, chatId, userId, data, messageId, esta
             const resultado = await EmailService.enviarCodigoVerificacao(cliente.email);
             if (resultado.sucesso) {
                 db.prepare('UPDATE clientes SET codigo_email = ? WHERE telegram_id = ?').run(resultado.codigo, userId);
-                await bot.sendMessage(chatId, '✅ Novo código enviado para seu email!');
+                await bot.sendMessage(chatId, `✅ Novo código gerado!\n\n🔐 Seu código é: *${resultado.codigo}*`, { parse_mode: 'Markdown' });
             }
         }
         return;
@@ -57,6 +57,9 @@ async function processarTexto(bot, chatId, userId, texto, estados) {
     const estado = estados.get(userId);
     const db = getDatabase();
     
+    if (!estado || !estado.aguardando) return;
+    
+    // NOME
     if (estado.aguardando === 'nome') {
         const validacao = Validacao.validarNome(texto);
         if (!validacao.valido) {
@@ -69,39 +72,38 @@ async function processarTexto(bot, chatId, userId, texto, estados) {
             .run(userId, validacao.nome, validacao.nome);
         
         estado.aguardando = 'email';
+        estados.set(userId, estado);
+        
         return bot.sendMessage(chatId, `✅ Nome salvo!\n\nAgora, digite seu *email* para receber o código de verificação:`, { parse_mode: 'Markdown' });
     }
     
+    // EMAIL
     if (estado.aguardando === 'email') {
         const validacao = Validacao.validarEmail(texto);
         if (!validacao.valido) {
             return bot.sendMessage(chatId, validacao.mensagem);
         }
         
+        // Gera código IMEDIATAMENTE
         const resultado = await EmailService.enviarCodigoVerificacao(validacao.email);
-        if (!resultado.sucesso) {
-            return bot.sendMessage(chatId, '❌ Erro ao enviar email. Tente novamente.');
-        }
+        const codigo = resultado.codigo;
         
         db.prepare('UPDATE clientes SET email = ?, codigo_email = ?, etapa_cadastro = ? WHERE telegram_id = ?')
-            .run(validacao.email, resultado.codigo, 'verificar_email', userId);
+            .run(validacao.email, codigo, 'verificar_email', userId);
         
         estado.aguardando = 'codigo';
+        estados.set(userId, estado);
         
-        const teclado = {
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: '📩 Reenviar Código', callback_data: 'cad_reenviar_codigo' }]
-                ]
-            }
-        };
-        
-        return bot.sendMessage(chatId, `📧 Código enviado para *${validacao.email}*\n\nDigite o código de 6 dígitos:`, {
-            parse_mode: 'Markdown',
-            ...teclado
-        });
+        return bot.sendMessage(chatId, 
+            `📧 Um código foi enviado para *${validacao.email}*\n\n` +
+            `🔐 Seu código é: *${codigo}*\n\n` +
+            `_Verifique também sua caixa de spam_\n\n` +
+            `Digite o código de 6 dígitos:`,
+            { parse_mode: 'Markdown' }
+        );
     }
     
+    // CÓDIGO
     if (estado.aguardando === 'codigo') {
         const cliente = db.prepare('SELECT * FROM clientes WHERE telegram_id = ?').get(userId);
         
@@ -113,9 +115,12 @@ async function processarTexto(bot, chatId, userId, texto, estados) {
             .run('telefone', userId);
         
         estado.aguardando = 'telefone';
-        return bot.sendMessage(chatId, '✅ Email verificado!\n\nAgora, digite seu *telefone*:', { parse_mode: 'Markdown' });
+        estados.set(userId, estado);
+        
+        return bot.sendMessage(chatId, '✅ Email verificado!\n\nAgora, digite seu *telefone* com DDD:', { parse_mode: 'Markdown' });
     }
     
+    // TELEFONE
     if (estado.aguardando === 'telefone') {
         const validacao = Validacao.validarTelefone(texto);
         if (!validacao.valido) {
@@ -127,6 +132,7 @@ async function processarTexto(bot, chatId, userId, texto, estados) {
         
         estado.etapa = 'endereco';
         estado.aguardando = null;
+        estados.set(userId, estado);
         
         const teclado = {
             reply_markup: {
@@ -145,7 +151,7 @@ async function processarTexto(bot, chatId, userId, texto, estados) {
     }
     
     // CEP
-    if (estado.etapa === 'endereco' && estado.aguardando === 'cep') {
+    if (estado.aguardando === 'cep') {
         const cepValido = await Validacao.validarCEP(texto);
         
         if (!cepValido.valido) {
@@ -161,6 +167,7 @@ async function processarTexto(bot, chatId, userId, texto, estados) {
             .run(cepValido.formatado, logradouro, bairro, localidade, uf, userId);
         
         estado.aguardando = 'numero';
+        estados.set(userId, estado);
         
         let msg = `📍 *Endereço encontrado:*\n\n`;
         msg += `📮 CEP: ${cepValido.formatado}\n`;
@@ -172,12 +179,11 @@ async function processarTexto(bot, chatId, userId, texto, estados) {
         return bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
     }
     
-    // Número do endereço
+    // NÚMERO
     if (estado.aguardando === 'numero') {
         db.prepare('UPDATE clientes SET numero = ?, etapa_cadastro = ? WHERE telegram_id = ?')
             .run(texto.trim(), 'completo', userId);
         
-        // Busca coordenadas e unidade próxima
         const cliente = db.prepare('SELECT * FROM clientes WHERE telegram_id = ?').get(userId);
         const enderecoCompleto = `${cliente.logradouro}, ${texto.trim()}, ${cliente.cidade}, ${cliente.estado}`;
         
@@ -203,48 +209,6 @@ async function processarTexto(bot, chatId, userId, texto, estados) {
         }
         
         return finalizarCadastro(bot, chatId, userId, estados);
-    }
-    
-    // Endereço completo (formato antigo)
-    if (estado.etapa === 'endereco' && !estado.aguardando) {
-        const partes = texto.split(',').map(p => p.trim());
-        
-        if (partes.length >= 4) {
-            const [logradouro, numero, bairro, cidade, estado_uf] = partes;
-            
-            db.prepare(`UPDATE clientes SET 
-                logradouro = ?, numero = ?, bairro = ?, cidade = ?, estado = ?,
-                etapa_cadastro = 'completo'
-                WHERE telegram_id = ?`)
-                .run(logradouro, numero, bairro, cidade, estado_uf || 'PR', userId);
-            
-            // Busca unidade próxima
-            const enderecoCompleto = `${logradouro}, ${numero}, ${cidade}, ${estado_uf || 'PR'}`;
-            const coords = await Geolocalizacao.buscarCoordenadas(enderecoCompleto);
-            
-            if (coords) {
-                db.prepare('UPDATE clientes SET latitude = ?, longitude = ? WHERE telegram_id = ?')
-                    .run(coords.latitude, coords.longitude, userId);
-                
-                const proximas = await Geolocalizacao.encontrarUnidadeProxima(coords.latitude, coords.longitude);
-                if (proximas.length > 0) {
-                    db.prepare('UPDATE clientes SET unidade_proxima_id = ? WHERE telegram_id = ?')
-                        .run(proximas[0].id, userId);
-                    
-                    await bot.sendMessage(chatId, 
-                        `📍 Unidade mais próxima:\n\n` +
-                        `🏪 *${proximas[0].nome}*\n` +
-                        `📍 ${proximas[0].logradouro}, ${proximas[0].numero}\n` +
-                        `📏 ${proximas[0].distancia} km`,
-                        { parse_mode: 'Markdown' }
-                    );
-                }
-            }
-            
-            return finalizarCadastro(bot, chatId, userId, estados);
-        }
-        
-        return bot.sendMessage(chatId, '❌ Formato inválido. Use: Rua, Número, Bairro, Cidade, Estado');
     }
 }
 
