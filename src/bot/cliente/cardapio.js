@@ -1,5 +1,6 @@
 const { getDatabase } = require('../../database/connection');
 const { formatarMoeda } = require('../../utils/helpers');
+const { toggleFavorito } = require('./favoritos');
 
 async function showCategorias(bot, chatId, messageId) {
     const db = getDatabase();
@@ -14,6 +15,9 @@ async function showCategorias(bot, chatId, messageId) {
     }
     
     teclado.inline_keyboard.push([
+        { text: '🔍 Pesquisar', callback_data: 'menu_pesquisar' }
+    ]);
+    teclado.inline_keyboard.push([
         { text: '⬅️ Voltar', callback_data: 'menu_voltar_principal' }
     ]);
     
@@ -25,10 +29,69 @@ async function showCategorias(bot, chatId, messageId) {
     });
 }
 
+async function pesquisarProdutos(bot, chatId, termo, messageId, userId) {
+    const db = getDatabase();
+    const produtos = db.prepare(`
+        SELECT p.*, c.nome as categoria_nome, c.emoji as categoria_emoji,
+               (SELECT MIN(preco) FROM tamanhos WHERE produto_id = p.id AND ativo = 1) as preco_min
+        FROM produtos p 
+        LEFT JOIN categorias c ON p.categoria_id = c.id 
+        WHERE p.disponivel = 1 AND (p.nome LIKE ? OR p.descricao LIKE ? OR p.ingredientes LIKE ?)
+        ORDER BY p.ordem
+    `).all(`%${termo}%`, `%${termo}%`, `%${termo}%`);
+    
+    if (produtos.length === 0) {
+        const teclado = {
+            inline_keyboard: [
+                [{ text: '🍕 Ver Cardápio', callback_data: 'menu_cardapio' }],
+                [{ text: '🔍 Nova Pesquisa', callback_data: 'menu_pesquisar' }],
+                [{ text: '⬅️ Voltar', callback_data: 'menu_voltar_principal' }]
+            ]
+        };
+        
+        return bot.editMessageText(`🔍 Nenhum produto encontrado para "*${termo}*"`, {
+            chat_id: chatId,
+            message_id: messageId,
+            parse_mode: 'Markdown',
+            reply_markup: teclado
+        });
+    }
+    
+    let mensagem = `🔍 *Resultados para "${termo}"*\n\n`;
+    const teclado = { inline_keyboard: [] };
+    
+    for (const prod of produtos) {
+        mensagem += `${prod.categoria_emoji || '📦'} *${prod.nome}*\n`;
+        mensagem += `💰 A partir de ${formatarMoeda(prod.preco_min || 0)}\n`;
+        mensagem += `📂 ${prod.categoria_nome}\n\n`;
+        
+        teclado.inline_keyboard.push([
+            { text: `🍕 ${prod.nome}`, callback_data: `prod_${prod.id}` },
+            { text: '❤️', callback_data: `fav_toggle_${prod.id}` }
+        ]);
+    }
+    
+    teclado.inline_keyboard.push([
+        { text: '⬅️ Voltar', callback_data: 'menu_cardapio' }
+    ]);
+    
+    await bot.editMessageText(mensagem, {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'Markdown',
+        reply_markup: teclado
+    });
+}
+
 async function showProdutos(bot, chatId, categoriaId, messageId, userId) {
     const db = getDatabase();
     const categoria = db.prepare('SELECT * FROM categorias WHERE id = ?').get(categoriaId);
-    const produtos = db.prepare('SELECT * FROM produtos WHERE categoria_id = ? AND disponivel = 1 ORDER BY ordem').all(categoriaId);
+    const produtos = db.prepare(`
+        SELECT p.*, (SELECT MIN(preco) FROM tamanhos WHERE produto_id = p.id AND ativo = 1) as preco_min
+        FROM produtos p
+        WHERE p.categoria_id = ? AND p.disponivel = 1 
+        ORDER BY p.ordem
+    `).all(categoriaId);
     
     if (produtos.length === 0) {
         const teclado = {
@@ -41,14 +104,21 @@ async function showProdutos(bot, chatId, categoriaId, messageId, userId) {
         });
     }
     
+    // Verifica favoritos do usuário
+    const cliente = db.prepare('SELECT id FROM clientes WHERE telegram_id = ?').get(userId);
+    const favoritos = db.prepare('SELECT produto_id FROM favoritos WHERE cliente_id = ?').all(cliente?.id || 0);
+    const favIds = favoritos.map(f => f.produto_id);
+    
     const teclado = { inline_keyboard: [] };
     
     for (const prod of produtos) {
-        const tamanhos = db.prepare('SELECT MIN(preco) as preco_min FROM tamanhos WHERE produto_id = ? AND ativo = 1').get(prod.id);
-        const preco = tamanhos?.preco_min || 0;
-        
+        const isFav = favIds.includes(prod.id);
         teclado.inline_keyboard.push([
-            { text: `${prod.nome} - A partir de ${formatarMoeda(preco)}`, callback_data: `prod_${prod.id}` }
+            { 
+                text: `${isFav ? '❤️' : '🍕'} ${prod.nome} - A partir de ${formatarMoeda(prod.preco_min || 0)}`, 
+                callback_data: `prod_${prod.id}` 
+            },
+            { text: isFav ? '❤️' : '🤍', callback_data: `fav_toggle_${prod.id}` }
         ]);
     }
     
@@ -69,9 +139,18 @@ async function showTamanhos(bot, chatId, produtoId, messageId, userId) {
     const produto = db.prepare('SELECT * FROM produtos WHERE id = ?').get(produtoId);
     const tamanhos = db.prepare('SELECT * FROM tamanhos WHERE produto_id = ? AND ativo = 1').all(produtoId);
     
+    // Verifica se é favorito
+    const cliente = db.prepare('SELECT id FROM clientes WHERE telegram_id = ?').get(userId);
+    const isFav = db.prepare('SELECT id FROM favoritos WHERE cliente_id = ? AND produto_id = ?').get(cliente?.id || 0, produtoId);
+    
+    let mensagem = `🍕 *${produto.nome}*\n\n`;
+    if (produto.descricao) mensagem += `📝 ${produto.descricao}\n`;
+    if (produto.ingredientes) mensagem += `🥬 ${produto.ingredientes}\n`;
+    mensagem += `\nEscolha o tamanho:`;
+    
     if (produto.foto) {
         await bot.sendPhoto(chatId, produto.foto, {
-            caption: `🍕 *${produto.nome}*\n\n📝 ${produto.descricao || ''}\n🥬 ${produto.ingredientes || ''}\n\nEscolha o tamanho:`,
+            caption: mensagem,
             parse_mode: 'Markdown'
         });
     }
@@ -88,25 +167,20 @@ async function showTamanhos(bot, chatId, produtoId, messageId, userId) {
     }
     
     teclado.inline_keyboard.push([
+        { text: isFav ? '❤️ Remover Favorito' : '🤍 Adicionar Favorito', callback_data: `fav_toggle_${produtoId}` }
+    ]);
+    teclado.inline_keyboard.push([
         { text: '⬅️ Voltar', callback_data: `cat_${produto.categoria_id}` }
     ]);
     
-    const mensagem = produto.foto ? undefined : 
-        `🍕 *${produto.nome}*\n\n📝 ${produto.descricao || ''}\n🥬 ${produto.ingredientes || ''}\n\nEscolha o tamanho:`;
-    
-    if (produto.foto) {
-        await bot.sendMessage(chatId, 'Escolha o tamanho:', {
-            parse_mode: 'Markdown',
-            reply_markup: teclado
-        });
-    } else {
+    const msg = produto.foto ? 
+        await bot.sendMessage(chatId, 'Escolha o tamanho:', { parse_mode: 'Markdown', reply_markup: teclado }) :
         await bot.editMessageText(mensagem, {
             chat_id: chatId,
             message_id: messageId,
             parse_mode: 'Markdown',
             reply_markup: teclado
         });
-    }
 }
 
 async function showBordas(bot, chatId, tamanhoId, produtoId, messageId, userId) {
@@ -136,9 +210,10 @@ async function showBordas(bot, chatId, tamanhoId, produtoId, messageId, userId) 
 
 async function showAdicionais(bot, chatId, bordaId, tamanhoId, produtoId, messageId, userId, selecionados = []) {
     const db = getDatabase();
-    const adicionais = db.prepare('SELECT * FROM adicionais WHERE disponivel = 1').all();
+    const adicionais = db.prepare('SELECT * FROM adicionais WHERE disponivel = 1 ORDER BY categoria, nome').all();
     
     const teclado = { inline_keyboard: [] };
+    let categoriaAtual = '';
     
     for (const adic of adicionais) {
         const selecionado = selecionados.includes(adic.id);
@@ -178,54 +253,45 @@ async function showAdicionais(bot, chatId, bordaId, tamanhoId, produtoId, messag
 async function processarCardapio(bot, chatId, userId, data, messageId, estados) {
     const estado = estados.get(userId) || {};
     
-    // Categorias
     if (data.startsWith('cat_')) {
         const catId = data.split('_')[1];
         estado.categoriaId = catId;
         estados.set(userId, estado);
         await showProdutos(bot, chatId, catId, messageId, userId);
+        return;
     }
     
-    // Produtos
-    else if (data.startsWith('prod_')) {
+    if (data.startsWith('prod_')) {
         const prodId = data.split('_')[1];
         estado.produtoId = prodId;
         estados.set(userId, estado);
         await showTamanhos(bot, chatId, prodId, messageId, userId);
+        return;
     }
     
-    // Tamanhos
-    else if (data.startsWith('tam_')) {
+    if (data.startsWith('tam_')) {
         const partes = data.split('_');
-        const tamId = partes[1];
-        const prodId = partes[2];
-        estado.tamanhoId = tamId;
-        estado.produtoId = prodId;
+        estado.tamanhoId = partes[1];
+        estado.produtoId = partes[2];
         estados.set(userId, estado);
-        await showBordas(bot, chatId, tamId, prodId, messageId, userId);
+        await showBordas(bot, chatId, partes[1], partes[2], messageId, userId);
+        return;
     }
     
-    // Bordas
-    else if (data.startsWith('borda_')) {
+    if (data.startsWith('borda_')) {
         const partes = data.split('_');
-        const bordaId = partes[1];
-        const tamId = partes[2];
-        const prodId = partes[3];
-        estado.bordaId = bordaId;
-        estado.tamanhoId = tamId;
-        estado.produtoId = prodId;
+        estado.bordaId = partes[1];
+        estado.tamanhoId = partes[2];
+        estado.produtoId = partes[3];
         estado.adicionais = [];
         estados.set(userId, estado);
-        await showAdicionais(bot, chatId, bordaId, tamId, prodId, messageId, userId, []);
+        await showAdicionais(bot, chatId, partes[1], partes[2], partes[3], messageId, userId, []);
+        return;
     }
     
-    // Adicionais (toggle)
-    else if (data.startsWith('adic_')) {
+    if (data.startsWith('adic_')) {
         const partes = data.split('_');
         const adicId = parseInt(partes[1]);
-        const bordaId = partes[2];
-        const tamId = partes[3];
-        const prodId = partes[4];
         
         if (!estado.adicionais) estado.adicionais = [];
         
@@ -237,11 +303,11 @@ async function processarCardapio(bot, chatId, userId, data, messageId, estados) 
         }
         
         estados.set(userId, estado);
-        await showAdicionais(bot, chatId, bordaId, tamId, prodId, messageId, userId, estado.adicionais);
+        await showAdicionais(bot, chatId, partes[2], partes[3], partes[4], messageId, userId, estado.adicionais);
+        return;
     }
     
-    // Adicionar ao carrinho
-    else if (data.startsWith('carr_add_')) {
+    if (data.startsWith('carr_add_')) {
         const partes = data.split('_');
         const bordaId = partes[2];
         const tamId = partes[3];
@@ -250,43 +316,16 @@ async function processarCardapio(bot, chatId, userId, data, messageId, estados) 
         const db = getDatabase();
         const cliente = db.prepare('SELECT id FROM clientes WHERE telegram_id = ?').get(userId);
         
-        // Verifica se já tem carrinho
-        let carrinho = db.prepare('SELECT * FROM carrinhos WHERE cliente_id = ? LIMIT 1').get(cliente.id);
+        const result = db.prepare(`INSERT INTO carrinhos (cliente_id, produto_id, tamanho_id, borda_id, quantidade) 
+                      VALUES (?, ?, ?, ?, 1)`).run(cliente.id, prodId, tamId, bordaId);
         
-        if (!carrinho) {
-            // Cria novo carrinho
-            const result = db.prepare(`INSERT INTO carrinhos (cliente_id, produto_id, tamanho_id, borda_id, quantidade) 
-                          VALUES (?, ?, ?, ?, 1)`).run(cliente.id, prodId, tamId, bordaId);
-            
-            // Salva adicionais
-            if (estado.adicionais && estado.adicionais.length > 0) {
-                const insertAdic = db.prepare('INSERT INTO carrinho_adicionais (carrinho_id, adicional_id) VALUES (?, ?)');
-                for (const adicId of estado.adicionais) {
-                    insertAdic.run(result.lastInsertRowid, adicId);
-                }
-            }
-        } else {
-            // Adiciona ao carrinho existente
-            const result = db.prepare(`INSERT INTO carrinhos (cliente_id, produto_id, tamanho_id, borda_id, quantidade) 
-                          VALUES (?, ?, ?, ?, 1)`).run(cliente.id, prodId, tamId, bordaId);
-            
-            if (estado.adicionais && estado.adicionais.length > 0) {
-                const insertAdic = db.prepare('INSERT INTO carrinho_adicionais (carrinho_id, adicional_id) VALUES (?, ?)');
-                for (const adicId of estado.adicionais) {
-                    insertAdic.run(result.lastInsertRowid, adicId);
-                }
+        if (estado.adicionais && estado.adicionais.length > 0) {
+            const insertAdic = db.prepare('INSERT INTO carrinho_adicionais (carrinho_id, adicional_id) VALUES (?, ?)');
+            for (const adicId of estado.adicionais) {
+                insertAdic.run(result.lastInsertRowid, adicId);
             }
         }
         
-        const teclado = {
-            inline_keyboard: [
-                [{ text: '🍕 Continuar Comprando', callback_data: 'menu_cardapio' }],
-                [{ text: '🛒 Ver Carrinho', callback_data: 'menu_carrinho' }],
-                [{ text: '💳 Finalizar Pedido', callback_data: 'carr_finalizar' }]
-            ]
-        };
-        
-        // Pega info do produto
         const produto = db.prepare('SELECT nome FROM produtos WHERE id = ?').get(prodId);
         const tamanho = db.prepare('SELECT nome, preco FROM tamanhos WHERE id = ?').get(tamId);
         const borda = db.prepare('SELECT nome, preco FROM bordas WHERE id = ?').get(bordaId);
@@ -301,6 +340,14 @@ async function processarCardapio(bot, chatId, userId, data, messageId, estados) 
         
         const subtotal = tamanho.preco + borda.preco + totalAdicionais;
         
+        const teclado = {
+            inline_keyboard: [
+                [{ text: '🍕 Continuar Comprando', callback_data: 'menu_cardapio' }],
+                [{ text: '🛒 Ver Carrinho', callback_data: 'menu_carrinho' }],
+                [{ text: '💳 Finalizar Pedido', callback_data: 'carr_finalizar' }]
+            ]
+        };
+        
         await bot.sendMessage(chatId, 
             `✅ *Adicionado ao carrinho!*\n\n` +
             `🍕 ${produto.nome}\n` +
@@ -314,7 +361,20 @@ async function processarCardapio(bot, chatId, userId, data, messageId, estados) 
         
         estado.adicionais = [];
         estados.set(userId, estado);
+        return;
+    }
+    
+    // Favorito toggle
+    if (data.startsWith('fav_toggle_')) {
+        const prodId = data.split('_')[2];
+        await toggleFavorito(bot, chatId, userId, prodId);
+        
+        // Recarrega a lista atual
+        if (estado.categoriaId) {
+            await showProdutos(bot, chatId, estado.categoriaId, messageId, userId);
+        }
+        return;
     }
 }
 
-module.exports = { showCategorias, showProdutos, showTamanhos, showBordas, showAdicionais, processarCardapio };
+module.exports = { showCategorias, showProdutos, showTamanhos, showBordas, showAdicionais, processarCardapio, pesquisarProdutos };
