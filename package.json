@@ -1,20 +1,16 @@
 {
   "name": "pizzaria-telegram",
   "version": "1.0.0",
-  "description": "Sistema completo de Pizzaria no Telegram - 100% botões",
+  "description": "Sistema completo de Pizzaria no Telegram",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "nodemon src/server.js"
+    "start": "node src/server.js"
   },
   "dependencies": {
     "node-telegram-bot-api": "^0.66.0",
     "better-sqlite3": "^11.6.0",
     "dotenv": "^16.4.5",
     "axios": "^1.7.2",
-    "nodemailer": "^6.9.14",
-    "moment": "^2.30.1",
-    "uuid": "^10.0.0",
     "qrcode": "^1.5.3",
     "mercadopago": "^2.2.1",
     "pdfkit": "^0.15.0",
