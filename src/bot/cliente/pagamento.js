@@ -3,7 +3,7 @@ const { formatarMoeda, gerarNumeroPedido } = require('../../utils/helpers');
 const pagamentoService = require('../../services/pagamento');
 const QRCode = require('qrcode');
 
-async function iniciarPagamento(bot, chatId, userId, messageId) {
+async function iniciarPagamento(bot, chatId, userId, messageId, estadoCarrinho = {}) {
     const db = getDatabase();
     const cliente = db.prepare('SELECT * FROM clientes WHERE telegram_id = ?').get(userId);
     
@@ -39,17 +39,32 @@ async function iniciarPagamento(bot, chatId, userId, messageId) {
             return a.nome;
         });
         
-        const totalItem = item.tamanho_preco + item.borda_preco + totalAdicionais;
+        const totalItem = (item.tamanho_preco + item.borda_preco + totalAdicionais) * item.quantidade;
         subtotal += totalItem;
         
-        itensDescricao.push(`${item.produto_nome} (${item.tamanho_nome})`);
+        itensDescricao.push(`${item.quantidade}x ${item.produto_nome} (${item.tamanho_nome})`);
     }
     
     const unidade = db.prepare('SELECT * FROM unidades WHERE id = ?').get(cliente.unidade_proxima_id);
     const taxaEntrega = unidade?.taxa_entrega || 0;
-    const total = subtotal + taxaEntrega;
+    
+    // Aplica cupom
+    let desconto = 0;
+    let cupomCodigo = null;
+    
+    if (estadoCarrinho.cupom) {
+        cupomCodigo = estadoCarrinho.cupom.codigo;
+        if (estadoCarrinho.cupom.tipo === 'percentual') {
+            desconto = subtotal * (estadoCarrinho.cupom.valor / 100);
+        } else {
+            desconto = estadoCarrinho.cupom.valor;
+        }
+    }
+    
+    const total = subtotal + taxaEntrega - desconto;
     const numeroPedido = gerarNumeroPedido();
     const descricao = itensDescricao.join(', ');
+    const observacao = estadoCarrinho.observacao || '';
     
     // Gera PIX
     const resultado = await pagamentoService.gerarPix(total, descricao, numeroPedido);
@@ -60,9 +75,9 @@ async function iniciarPagamento(bot, chatId, userId, messageId) {
     
     // Salva pedido
     const pedido = db.prepare(`INSERT INTO pedidos 
-        (numero, cliente_id, unidade_id, status, subtotal, taxa_entrega, total, pagamento_metodo, pagamento_id, pagamento_qrcode, pagamento_status)
-        VALUES (?, ?, ?, 'pendente', ?, ?, ?, 'pix', ?, ?, 'pendente')`)
-        .run(numeroPedido, cliente.id, cliente.unidade_proxima_id, subtotal, taxaEntrega, total, resultado.payment_id, resultado.qr_code);
+        (numero, cliente_id, unidade_id, status, subtotal, taxa_entrega, desconto, total, cupom, pagamento_metodo, pagamento_id, pagamento_qrcode, pagamento_status, observacao)
+        VALUES (?, ?, ?, 'pendente', ?, ?, ?, ?, ?, 'pix', ?, ?, 'pendente', ?)`)
+        .run(numeroPedido, cliente.id, cliente.unidade_proxima_id, subtotal, taxaEntrega, desconto, total, cupomCodigo, resultado.payment_id, resultado.qr_code, observacao);
     
     // Salva itens
     for (const item of itens) {
@@ -89,17 +104,27 @@ async function iniciarPagamento(bot, chatId, userId, messageId) {
             .run(pedido.lastInsertRowid, item.produto_nome, item.tamanho_nome, item.borda_nome, nomesAdicionais, item.quantidade, precoUnitario);
     }
     
+    // Atualiza uso do cupom
+    if (cupomCodigo) {
+        db.prepare('UPDATE cupons SET uso_atual = uso_atual + 1 WHERE codigo = ?').run(cupomCodigo);
+    }
+    
     // Gera QR Code como imagem
     const qrImageBuffer = await QRCode.toBuffer(resultado.copia_cola);
     
     // Envia comprovante
-    const mensagem = `💳 *PAGAMENTO PIX*\n\n` +
-                    `📦 Pedido: *${numeroPedido}*\n` +
-                    `💰 Valor: *${formatarMoeda(total)}*\n\n` +
-                    `📋 *PIX Copia e Cola:*\n` +
-                    `\`${resultado.copia_cola}\`\n\n` +
-                    `⏰ Expira em 30 minutos\n\n` +
-                    `_Após pagar, aguarde a confirmação automática._`;
+    let mensagem = `💳 *PAGAMENTO PIX*\n\n` +
+                  `📦 Pedido: *${numeroPedido}*\n` +
+                  `💰 Valor: *${formatarMoeda(total)}*\n\n`;
+    
+    if (observacao) {
+        mensagem += `📝 Obs: ${observacao}\n\n`;
+    }
+    
+    mensagem += `📋 *PIX Copia e Cola:*\n` +
+               `\`${resultado.copia_cola}\`\n\n` +
+               `⏰ Expira em 30 minutos\n\n` +
+               `_Após pagar, aguarde a confirmação automática._`;
     
     const teclado = {
         inline_keyboard: [
@@ -118,12 +143,16 @@ async function iniciarPagamento(bot, chatId, userId, messageId) {
     db.prepare('DELETE FROM carrinho_adicionais WHERE carrinho_id IN (SELECT id FROM carrinhos WHERE cliente_id = ?)').run(cliente.id);
     db.prepare('DELETE FROM carrinhos WHERE cliente_id = ?').run(cliente.id);
     
+    // Limpa estado do carrinho
+    const { estadosCarrinho } = require('./carrinho');
+    estadosCarrinho.delete(userId);
+    
     // Inicia verificação automática
     verificarPagamentoPeriodicamente(bot, chatId, pedido.lastInsertRowid, resultado.payment_id, 0);
 }
 
 async function verificarPagamentoPeriodicamente(bot, chatId, pedidoId, paymentId, tentativas) {
-    if (tentativas >= 30) return; // 30 tentativas = 5 minutos
+    if (tentativas >= 30) return;
     
     setTimeout(async () => {
         const resultado = await pagamentoService.verificarPagamento(paymentId);
@@ -140,7 +169,8 @@ async function verificarPagamentoPeriodicamente(bot, chatId, pedidoId, paymentId
                 `📦 Pedido: *${pedido.numero}*\n` +
                 `💰 Valor: ${formatarMoeda(pedido.total)}\n` +
                 `📊 Status: Em preparo 🍕\n\n` +
-                `_Seu pedido está sendo preparado!_`,
+                `_Seu pedido está sendo preparado!_\n\n` +
+                `⭐ Após receber, avalie seu pedido!`,
                 { parse_mode: 'Markdown' }
             );
             
@@ -150,21 +180,47 @@ async function verificarPagamentoPeriodicamente(bot, chatId, pedidoId, paymentId
                 const adminIds = process.env.ADMIN_IDS.split(',').map(Number);
                 for (const adminId of adminIds) {
                     await adminBot.sendMessage(adminId,
-                        `🔔 *NOVO PEDIDO PAGO!*\n\n📦 ${pedido.numero}\n💰 ${formatarMoeda(pedido.total)}`,
+                        `🔔 *NOVO PEDIDO PAGO!*\n\n📦 ${pedido.numero}\n💰 ${formatarMoeda(pedido.total)}\n👤 ${pedido.cliente_id}`,
                         { parse_mode: 'Markdown' }
                     );
                 }
             }
+            
+            // Agenda pedido de avaliação após 30 min
+            setTimeout(async () => {
+                await solicitarAvaliacao(bot, chatId, pedidoId);
+            }, 30 * 60 * 1000);
+            
         } else {
             verificarPagamentoPeriodicamente(bot, chatId, pedidoId, paymentId, tentativas + 1);
         }
-    }, 10000); // Verifica a cada 10 segundos
+    }, 10000);
+}
+
+async function solicitarAvaliacao(bot, chatId, pedidoId) {
+    const teclado = {
+        inline_keyboard: [
+            [
+                { text: '⭐', callback_data: `aval_${pedidoId}_1` },
+                { text: '⭐⭐', callback_data: `aval_${pedidoId}_2` },
+                { text: '⭐⭐⭐', callback_data: `aval_${pedidoId}_3` },
+                { text: '⭐⭐⭐⭐', callback_data: `aval_${pedidoId}_4` },
+                { text: '⭐⭐⭐⭐⭐', callback_data: `aval_${pedidoId}_5` }
+            ]
+        ]
+    };
+    
+    await bot.sendMessage(chatId, '🍕 *Como foi sua experiência?*\n\nDeixe sua avaliação:', {
+        parse_mode: 'Markdown',
+        reply_markup: teclado
+    });
 }
 
 async function processarPagamento(bot, chatId, userId, data, messageId, estados) {
+    const db = getDatabase();
+    
     if (data.startsWith('pag_verificar_')) {
         const pedidoId = data.split('_')[2];
-        const db = getDatabase();
         const pedido = db.prepare('SELECT * FROM pedidos WHERE id = ?').get(pedidoId);
         
         if (pedido && pedido.pagamento_status === 'approved') {
@@ -181,6 +237,25 @@ async function processarPagamento(bot, chatId, userId, data, messageId, estados)
         } else {
             await bot.sendMessage(chatId, '⏳ Pagamento ainda não confirmado. Aguarde...');
         }
+    }
+    
+    // Avaliação
+    if (data.startsWith('aval_')) {
+        const partes = data.split('_');
+        const pedidoId = partes[1];
+        const nota = parseInt(partes[2]);
+        
+        const cliente = db.prepare('SELECT id FROM clientes WHERE telegram_id = ?').get(userId);
+        
+        db.prepare('INSERT INTO avaliacoes (pedido_id, cliente_id, nota) VALUES (?, ?, ?)')
+            .run(pedidoId, cliente.id, nota);
+        
+        // Adiciona pontos de fidelidade
+        const pontos = nota * 10;
+        db.prepare('UPDATE clientes SET fidelidade_pontos = fidelidade_pontos + ? WHERE id = ?')
+            .run(pontos, cliente.id);
+        
+        await bot.sendMessage(chatId, `⭐ Obrigado pela avaliação! Você ganhou *${pontos} pontos* de fidelidade!`);
     }
 }
 
