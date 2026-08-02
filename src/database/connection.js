@@ -120,6 +120,16 @@ async function initDatabase() {
             disponivel INTEGER DEFAULT 1
         );
 
+        CREATE TABLE IF NOT EXISTS favoritos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cliente_id INTEGER NOT NULL,
+            produto_id INTEGER NOT NULL,
+            data DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (cliente_id) REFERENCES clientes(id),
+            FOREIGN KEY (produto_id) REFERENCES produtos(id),
+            UNIQUE(cliente_id, produto_id)
+        );
+
         CREATE TABLE IF NOT EXISTS carrinhos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             cliente_id INTEGER NOT NULL,
@@ -237,9 +247,8 @@ function inserirDadosPadrao(db) {
     insertAdicional.run('Azeitona', 3, 'extras');
     insertAdicional.run('Orégano', 2, 'temperos');
     
-    // Produto de exemplo
-    const insertProduto = db.prepare('INSERT INTO produtos (categoria_id, nome, descricao, ingredientes, foto) VALUES (?, ?, ?, ?, ?)');
-    const info = insertProduto.run(1, 'Calabresa', 'Pizza de calabresa com queijo', 'Calabresa, Queijo, Molho de tomate', 'https://i.imgur.com/example.jpg');
+    const insertProduto = db.prepare('INSERT INTO produtos (categoria_id, nome, descricao, ingredientes) VALUES (?, ?, ?, ?)');
+    const info = insertProduto.run(1, 'Calabresa', 'Deliciosa pizza de calabresa com queijo', 'Calabresa, Queijo, Molho de tomate, Cebola');
     
     const insertTamanho = db.prepare('INSERT INTO tamanhos (produto_id, nome, preco, fatias) VALUES (?, ?, ?, ?)');
     insertTamanho.run(info.lastInsertRowid, 'Broto', 29.90, 4);
@@ -247,7 +256,6 @@ function inserirDadosPadrao(db) {
     insertTamanho.run(info.lastInsertRowid, 'Grande', 49.90, 8);
     insertTamanho.run(info.lastInsertRowid, 'Família', 59.90, 12);
     
-    // Unidade de exemplo
     const insertUnidade = db.prepare('INSERT INTO unidades (nome, cidade, estado, bairro, logradouro, numero, latitude, longitude, taxa_entrega) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
     insertUnidade.run('Pizzaria Central', 'Paranavaí', 'PR', 'Centro', 'Rua Principal', '100', -23.0775, -52.4636, 8.0);
 }
