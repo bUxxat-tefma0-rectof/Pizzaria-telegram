@@ -2,7 +2,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const { getDatabase } = require('../../database/connection');
 const logger = require('../../utils/logger');
 const { formatarMoeda, formatarData } = require('../../utils/helpers');
-const { showUnidadesMenu, processarUnidadesAdmin, processarTextoUnidades } = require('./unidades');
+const { showUnidadesMenu, processarUnidadesAdmin, processarTextoUnidades, processarLocalizacaoUnidades } = require('./unidades');
 const { showCardapioMenu, processarCardapioAdmin, processarTextoAdmin } = require('./cardapio');
 const { showProdutosMenu, processarProdutosAdmin, processarTextoProdutos } = require('./produtos');
 const { showPedidosMenu, processarPedidosAdmin } = require('./pedidos');
@@ -41,6 +41,14 @@ async function startAdminBot() {
         adminBot.answerCallbackQuery(query.id);
         
         await processarAdminMenu(chatId, userId, data, messageId);
+    });
+    
+    adminBot.on('location', async (msg) => {
+        const userId = msg.from.id;
+        if (!adminIds.includes(userId)) return;
+        
+        const chatId = msg.chat.id;
+        await processarLocalizacaoUnidades(adminBot, chatId, userId, msg.location, estadosAdmin);
     });
     
     adminBot.on('message', async (msg) => {
