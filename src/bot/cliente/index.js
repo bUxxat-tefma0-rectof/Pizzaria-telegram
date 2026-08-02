@@ -28,7 +28,7 @@ async function startClientBot() {
             return showMenuPrincipal(bot, chatId, cliente.nome);
         }
         
-        estados.set(userId, { tela: 'cadastro', etapa: 'nome' });
+        estados.set(userId, { tela: 'cadastro', etapa: 'nome', aguardando: 'nome' });
         await iniciarCadastro(bot, chatId);
     });
     
@@ -50,7 +50,7 @@ async function startClientBot() {
             return;
         }
         
-        if (data.startsWith('card_') || data.startsWith('cat_') || data.startsWith('prod_') || 
+        if (data.startsWith('cat_') || data.startsWith('prod_') || 
             data.startsWith('tam_') || data.startsWith('borda_') || data.startsWith('adic_') || 
             data.startsWith('carr_add_') || data.startsWith('fav_toggle_')) {
             await processarCardapio(bot, chatId, userId, data, messageId, estados);
@@ -83,38 +83,49 @@ async function startClientBot() {
         }
     });
     
+    // ÚNICO handler de mensagem
     bot.on('message', async (msg) => {
-        if (msg.text && msg.text.startsWith('/')) return;
-        
         const chatId = msg.chat.id;
         const userId = msg.from.id;
         
+        // Ignora comandos
+        if (msg.text && msg.text.startsWith('/')) return;
+        
+        // Localização
         if (msg.location) {
             const estado = estados.get(userId);
-            if (estado && estado.tela === 'cadastro' && estado.etapa === 'endereco') {
+            if (estado && estado.tela === 'cadastro') {
                 await processarLocalizacao(bot, chatId, userId, msg.location, estados);
             }
             return;
         }
         
-        const texto = msg.text;
-        if (!texto) return;
+        // Texto
+        if (!msg.text) return;
         
+        const texto = msg.text;
         const estado = estados.get(userId);
         
-        if (estado && estado.tela === 'pesquisar' && estado.aguardando === 'termo') {
+        console.log(`📩 Mensagem de ${userId}: "${texto}" | Estado:`, estado ? estado.aguardando : 'sem estado');
+        
+        if (!estado) return;
+        
+        // Pesquisa
+        if (estado.tela === 'pesquisar' && estado.aguardando === 'termo') {
             estado.aguardando = null;
             estados.set(userId, estado);
             await pesquisarProdutos(bot, chatId, texto, null, userId);
             return;
         }
         
-        if (estado && estado.tela === 'cadastro' && estado.aguardando) {
+        // Cadastro
+        if (estado.tela === 'cadastro' && estado.aguardando) {
             await processarTexto(bot, chatId, userId, texto, estados);
             return;
         }
         
-        if (estado && estado.tela === 'perfil' && estado.aguardando) {
+        // Perfil
+        if (estado.tela === 'perfil' && estado.aguardando) {
             await processarTextoPerfil(bot, chatId, userId, texto, estados);
             return;
         }
