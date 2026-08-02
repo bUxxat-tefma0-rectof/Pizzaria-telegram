@@ -171,3 +171,149 @@ async function processarProdutosAdmin(bot, chatId, userId, data, messageId, esta
         await bot.sendMessage(chatId, 'Digite os novos ingredientes:');
         return;
     }
+    
+    if (data.startsWith('adm_prod_setfoto_')) {
+        const prodId = data.split('_')[3];
+        estado.aguardando = `setfoto_prod_${prodId}`;
+        estados.set(userId, estado);
+        await bot.sendMessage(chatId, 'Envie a URL da nova foto:');
+        return;
+    }
+    
+    if (data.startsWith('adm_prod_setordem_')) {
+        const prodId = data.split('_')[3];
+        estado.aguardando = `setordem_prod_${prodId}`;
+        estados.set(userId, estado);
+        await bot.sendMessage(chatId, 'Digite o número da nova ordem:');
+        return;
+    }
+    
+    if (data.startsWith('adm_prod_toggle_')) {
+        const prodId = data.split('_')[3];
+        const prod = db.prepare('SELECT * FROM produtos WHERE id = ?').get(prodId);
+        db.prepare('UPDATE produtos SET disponivel = ? WHERE id = ?').run(prod.disponivel ? 0 : 1, prodId);
+        await bot.answerCallbackQuery({ callback_query_id: `${chatId}_${messageId}`, text: '✅ Status alterado!' });
+        await showEditarProduto(bot, chatId, prodId, messageId);
+        return;
+    }
+    
+    if (data.startsWith('adm_prod_del_')) {
+        const prodId = data.split('_')[3];
+        // Remove tamanhos primeiro
+        db.prepare('DELETE FROM tamanhos WHERE produto_id = ?').run(prodId);
+        db.prepare('DELETE FROM produtos WHERE id = ?').run(prodId);
+        await showProdutosMenu(bot, chatId, messageId);
+        return;
+    }
+}
+
+// Processa texto dos produtos
+async function processarTextoProdutos(bot, chatId, userId, texto, estados) {
+    const db = getDatabase();
+    const estado = estados.get(userId);
+    
+    if (!estado || !estado.aguardando) return;
+    
+    const aguardando = estado.aguardando;
+    
+    // Novo produto
+    if (aguardando.startsWith('novo_produto_')) {
+        const catId = aguardando.split('_')[2];
+        const partes = texto.split(',').map(p => p.trim());
+        
+        if (partes.length < 5) return bot.sendMessage(chatId, '❌ Formato: Nome, Descrição, Ingredientes, URL Foto, Preço Base');
+        
+        const nome = partes[0];
+        const descricao = partes[1];
+        const ingredientes = partes[2];
+        const foto = partes[3];
+        const precoBase = parseFloat(partes[4].replace(',', '.'));
+        
+        if (isNaN(precoBase)) return bot.sendMessage(chatId, '❌ Preço inválido.');
+        
+        const maxOrdem = db.prepare('SELECT MAX(ordem) as max FROM produtos WHERE categoria_id = ?').get(catId);
+        const result = db.prepare('INSERT INTO produtos (categoria_id, nome, descricao, ingredientes, foto, ordem) VALUES (?, ?, ?, ?, ?, ?)')
+            .run(catId, nome, descricao, ingredientes, foto, (maxOrdem.max || 0) + 1);
+        
+        // Cria tamanho padrão
+        db.prepare('INSERT INTO tamanhos (produto_id, nome, preco, fatias) VALUES (?, ?, ?, ?)')
+            .run(result.lastInsertRowid, 'Média', precoBase, 8);
+        
+        estado.aguardando = null;
+        estados.set(userId, estado);
+        await bot.sendMessage(chatId, `✅ Produto "${nome}" criado!`);
+        return;
+    }
+    
+    // Alterar nome
+    if (aguardando.startsWith('setnome_prod_')) {
+        const prodId = aguardando.split('_')[2];
+        db.prepare('UPDATE produtos SET nome = ? WHERE id = ?').run(texto.trim(), prodId);
+        estado.aguardando = null;
+        estados.set(userId, estado);
+        await bot.sendMessage(chatId, '✅ Nome alterado!');
+        return;
+    }
+    
+    // Alterar descrição
+    if (aguardando.startsWith('setdesc_prod_')) {
+        const prodId = aguardando.split('_')[2];
+        db.prepare('UPDATE produtos SET descricao = ? WHERE id = ?').run(texto.trim(), prodId);
+        estado.aguardando = null;
+        estados.set(userId, estado);
+        await bot.sendMessage(chatId, '✅ Descrição alterada!');
+        return;
+    }
+    
+    // Alterar ingredientes
+    if (aguardando.startsWith('setingr_prod_')) {
+        const prodId = aguardando.split('_')[2];
+        db.prepare('UPDATE produtos SET ingredientes = ? WHERE id = ?').run(texto.trim(), prodId);
+        estado.aguardando = null;
+        estados.set(userId, estado);
+        await bot.sendMessage(chatId, '✅ Ingredientes alterados!');
+        return;
+    }
+    
+    // Alterar foto
+    if (aguardando.startsWith('setfoto_prod_')) {
+        const prodId = aguardando.split('_')[2];
+        db.prepare('UPDATE produtos SET foto = ? WHERE id = ?').run(texto.trim(), prodId);
+        estado.aguardando = null;
+        estados.set(userId, estado);
+        await bot.sendMessage(chatId, '✅ Foto alterada!');
+        return;
+    }
+    
+    // Alterar ordem
+    if (aguardando.startsWith('setordem_prod_')) {
+        const prodId = aguardando.split('_')[2];
+        const ordem = parseInt(texto);
+        if (isNaN(ordem)) return bot.sendMessage(chatId, '❌ Digite um número.');
+        db.prepare('UPDATE produtos SET ordem = ? WHERE id = ?').run(ordem, prodId);
+        estado.aguardando = null;
+        estados.set(userId, estado);
+        await bot.sendMessage(chatId, '✅ Ordem alterada!');
+        return;
+    }
+    
+    // Alterar categoria (recebe número)
+    if (aguardando.startsWith('setcat_prod_')) {
+        const prodId = aguardando.split('_')[2];
+        const categorias = db.prepare('SELECT * FROM categorias WHERE ativo = 1 ORDER BY ordem').all();
+        const num = parseInt(texto);
+        
+        if (isNaN(num) || num < 1 || num > categorias.length) {
+            return bot.sendMessage(chatId, '❌ Número inválido.');
+        }
+        
+        const catSelecionada = categorias[num - 1];
+        db.prepare('UPDATE produtos SET categoria_id = ? WHERE id = ?').run(catSelecionada.id, prodId);
+        estado.aguardando = null;
+        estados.set(userId, estado);
+        await bot.sendMessage(chatId, `✅ Categoria alterada para ${catSelecionada.nome}!`);
+        return;
+    }
+}
+
+module.exports = { showProdutosMenu, showEditarProduto, processarProdutosAdmin, processarTextoProdutos };
