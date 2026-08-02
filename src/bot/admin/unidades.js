@@ -60,6 +60,7 @@ async function showEditarUnidade(bot, chatId, unidadeId, messageId) {
             [{ text: '🚚 Taxa Entrega', callback_data: `adm_unid_settaxa_${unidadeId}` }, { text: '💰 Pedido Mínimo', callback_data: `adm_unid_setmin_${unidadeId}` }],
             [{ text: '📏 Raio Entrega', callback_data: `adm_unid_setraio_${unidadeId}` }],
             [{ text: '🕐 Horários', callback_data: `adm_unid_sethora_${unidadeId}` }],
+            [{ text: '📍 Atualizar Localização', callback_data: `adm_unid_setloc_${unidadeId}` }],
             [{ text: unidade.ativo ? '❌ Desativar' : '✅ Ativar', callback_data: `adm_unid_toggle_${unidadeId}` }],
             [{ text: '🗑 Excluir', callback_data: `adm_unid_del_${unidadeId}` }],
             [{ text: '⬅️ Voltar', callback_data: 'adm_unidades' }]
@@ -84,9 +85,9 @@ async function processarUnidadesAdmin(bot, chatId, userId, data, messageId, esta
     }
     
     if (data === 'adm_unid_nova') {
-        estado.aguardando = 'nova_unidade';
+        estado.aguardando = 'nova_unidade_nome';
         estados.set(userId, estado);
-        await bot.sendMessage(chatId, '📍 Digite os dados da nova unidade:\n\nNome, Cidade, Estado, Bairro, Logradouro, Número, CEP, Telefone, WhatsApp, Taxa Entrega, Pedido Mínimo, Raio Entrega, Horário Abertura, Horário Fechamento\n\nExemplo: Pizzaria Centro, Paranavaí, PR, Centro, Rua Principal, 100, 87700000, 44999525600, 44999525600, 8.00, 30.00, 10, 18:00, 23:00');
+        await bot.sendMessage(chatId, '📍 Digite o *nome* da nova unidade:\n\nExemplo: Pizzaria Centro');
         return;
     }
     
@@ -117,6 +118,19 @@ async function processarUnidadesAdmin(bot, chatId, userId, data, messageId, esta
         const campo = partes[2];
         const unidId = partes[3];
         
+        if (campo === 'loc') {
+            estado.aguardando = `set_loc_unid_${unidId}`;
+            estados.set(userId, estado);
+            await bot.sendMessage(chatId, '📍 Envie a *localização* da unidade:', {
+                reply_markup: {
+                    keyboard: [[{ text: '📍 Compartilhar Localização', request_location: true }]],
+                    resize_keyboard: true,
+                    one_time_keyboard: true
+                }
+            });
+            return;
+        }
+        
         const mapaCampos = {
             'nome': 'Digite o novo nome:',
             'tel': 'Digite o novo telefone:',
@@ -142,20 +156,114 @@ async function processarTextoUnidades(bot, chatId, userId, texto, estados) {
     
     const aguardando = estado.aguardando;
     
-    // Nova unidade
-    if (aguardando === 'nova_unidade') {
-        const partes = texto.split(',').map(p => p.trim());
-        if (partes.length < 14) return bot.sendMessage(chatId, '❌ Preencha todos os campos.');
-        
-        const [nome, cidade, estado_uf, bairro, logradouro, numero, cep, telefone, whatsapp, taxa, minimo, raio, abre, fecha] = partes;
-        
-        db.prepare(`INSERT INTO unidades (nome, cidade, estado, bairro, logradouro, numero, cep, telefone, whatsapp, taxa_entrega, pedido_minimo, raio_entrega, horario_abertura, horario_fechamento)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-            .run(nome, cidade, estado_uf, bairro, logradouro, numero, cep, telefone, whatsapp, parseFloat(taxa), parseFloat(minimo), parseFloat(raio), abre, fecha);
-        
-        estado.aguardando = null;
+    // Novo cadastro - etapas
+    if (aguardando === 'nova_unidade_nome') {
+        estado.novaUnidade = { nome: texto.trim() };
+        estado.aguardando = 'nova_unidade_cidade';
         estados.set(userId, estado);
-        await bot.sendMessage(chatId, `✅ Unidade "${nome}" criada!`);
+        await bot.sendMessage(chatId, '🏙️ Digite a *cidade*:');
+        return;
+    }
+    
+    if (aguardando === 'nova_unidade_cidade') {
+        estado.novaUnidade.cidade = texto.trim();
+        estado.aguardando = 'nova_unidade_estado';
+        estados.set(userId, estado);
+        await bot.sendMessage(chatId, '🗺️ Digite o *estado* (sigla):\nExemplo: PR');
+        return;
+    }
+    
+    if (aguardando === 'nova_unidade_estado') {
+        estado.novaUnidade.estado = texto.trim().toUpperCase();
+        estado.aguardando = 'nova_unidade_bairro';
+        estados.set(userId, estado);
+        await bot.sendMessage(chatId, '🏘️ Digite o *bairro*:');
+        return;
+    }
+    
+    if (aguardando === 'nova_unidade_bairro') {
+        estado.novaUnidade.bairro = texto.trim();
+        estado.aguardando = 'nova_unidade_rua';
+        estados.set(userId, estado);
+        await bot.sendMessage(chatId, '🏠 Digite o *logradouro* (rua/avenida):');
+        return;
+    }
+    
+    if (aguardando === 'nova_unidade_rua') {
+        estado.novaUnidade.logradouro = texto.trim();
+        estado.aguardando = 'nova_unidade_numero';
+        estados.set(userId, estado);
+        await bot.sendMessage(chatId, '🔢 Digite o *número*:');
+        return;
+    }
+    
+    if (aguardando === 'nova_unidade_numero') {
+        estado.novaUnidade.numero = texto.trim();
+        estado.aguardando = 'nova_unidade_telefone';
+        estados.set(userId, estado);
+        await bot.sendMessage(chatId, '📞 Digite o *telefone* (com DDD):');
+        return;
+    }
+    
+    if (aguardando === 'nova_unidade_telefone') {
+        estado.novaUnidade.telefone = texto.trim();
+        estado.aguardando = 'nova_unidade_whatsapp';
+        estados.set(userId, estado);
+        await bot.sendMessage(chatId, '💬 Digite o *WhatsApp* (com DDD):');
+        return;
+    }
+    
+    if (aguardando === 'nova_unidade_whatsapp') {
+        estado.novaUnidade.whatsapp = texto.trim();
+        estado.aguardando = 'nova_unidade_taxa';
+        estados.set(userId, estado);
+        await bot.sendMessage(chatId, '🚚 Digite a *taxa de entrega* (ex: 8.00):');
+        return;
+    }
+    
+    if (aguardando === 'nova_unidade_taxa') {
+        estado.novaUnidade.taxa_entrega = parseFloat(texto.replace(',', '.'));
+        estado.aguardando = 'nova_unidade_minimo';
+        estados.set(userId, estado);
+        await bot.sendMessage(chatId, '💰 Digite o *pedido mínimo* (ex: 30.00):');
+        return;
+    }
+    
+    if (aguardando === 'nova_unidade_minimo') {
+        estado.novaUnidade.pedido_minimo = parseFloat(texto.replace(',', '.'));
+        estado.aguardando = 'nova_unidade_raio';
+        estados.set(userId, estado);
+        await bot.sendMessage(chatId, '📏 Digite o *raio de entrega* em km (ex: 10):');
+        return;
+    }
+    
+    if (aguardando === 'nova_unidade_raio') {
+        estado.novaUnidade.raio_entrega = parseFloat(texto.replace(',', '.'));
+        estado.aguardando = 'nova_unidade_abertura';
+        estados.set(userId, estado);
+        await bot.sendMessage(chatId, '🕐 Digite o *horário de abertura* (ex: 18:00):');
+        return;
+    }
+    
+    if (aguardando === 'nova_unidade_abertura') {
+        estado.novaUnidade.horario_abertura = texto.trim();
+        estado.aguardando = 'nova_unidade_fechamento';
+        estados.set(userId, estado);
+        await bot.sendMessage(chatId, '🕐 Digite o *horário de fechamento* (ex: 23:00):');
+        return;
+    }
+    
+    if (aguardando === 'nova_unidade_fechamento') {
+        estado.novaUnidade.horario_fechamento = texto.trim();
+        estado.aguardando = 'nova_unidade_localizacao';
+        estados.set(userId, estado);
+        await bot.sendMessage(chatId, '📍 Envie a *localização* da unidade:', {
+            reply_markup: {
+                keyboard: [[{ text: '📍 Compartilhar Localização', request_location: true }]],
+                resize_keyboard: true,
+                one_time_keyboard: true
+            }
+        });
         return;
     }
     
@@ -187,9 +295,62 @@ async function processarTextoUnidades(bot, chatId, userId, texto, estados) {
         
         estado.aguardando = null;
         estados.set(userId, estado);
-        await bot.sendMessage(chatId, '✅ Atualizado!');
+        await bot.sendMessage(chatId, '✅ Atualizado!', { reply_markup: { remove_keyboard: true } });
         return;
     }
 }
 
-module.exports = { showUnidadesMenu, processarUnidadesAdmin, processarTextoUnidades };
+async function processarLocalizacaoUnidades(bot, chatId, userId, location, estados) {
+    const db = getDatabase();
+    const estado = estados.get(userId);
+    
+    if (!estado || !estado.aguardando) return;
+    
+    const { latitude, longitude } = location;
+    
+    // Se for nova unidade
+    if (estado.aguardando === 'nova_unidade_localizacao') {
+        const u = estado.novaUnidade;
+        
+        db.prepare(`INSERT INTO unidades 
+            (nome, cidade, estado, bairro, logradouro, numero, telefone, whatsapp, 
+             taxa_entrega, pedido_minimo, raio_entrega, horario_abertura, horario_fechamento,
+             latitude, longitude)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+            .run(u.nome, u.cidade, u.estado, u.bairro, u.logradouro, u.numero,
+                 u.telefone, u.whatsapp, u.taxa_entrega, u.pedido_minimo, u.raio_entrega,
+                 u.horario_abertura, u.horario_fechamento, latitude, longitude);
+        
+        estado.aguardando = null;
+        estado.novaUnidade = null;
+        estados.set(userId, estado);
+        
+        await bot.sendMessage(chatId, `✅ Unidade "${u.nome}" criada com sucesso!`, {
+            reply_markup: { remove_keyboard: true }
+        });
+        return;
+    }
+    
+    // Se for editar unidade existente
+    if (aguardando.startsWith('set_loc_unid_')) {
+        const unidId = estado.aguardando.split('_')[3];
+        
+        db.prepare('UPDATE unidades SET latitude = ?, longitude = ? WHERE id = ?')
+            .run(latitude, longitude, unidId);
+        
+        estado.aguardando = null;
+        estados.set(userId, estado);
+        
+        await bot.sendMessage(chatId, '✅ Localização atualizada!', {
+            reply_markup: { remove_keyboard: true }
+        });
+        return;
+    }
+}
+
+module.exports = { 
+    showUnidadesMenu, 
+    processarUnidadesAdmin, 
+    processarTextoUnidades, 
+    processarLocalizacaoUnidades 
+};
